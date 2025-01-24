@@ -88,16 +88,15 @@ void MaybeShowPremiumToast(
 		return;
 	}
 	const auto filter = [=](const auto ...) {
-		const auto usage = ChatHelpers::WindowUsage::PremiumPromo;
-		if (const auto controller = show->resolveWindow(usage)) {
+		if (const auto controller = show->resolveWindow()) {
 			Settings::ShowPremium(controller, ref);
 		}
 		return false;
 	};
 	show->showToast({
 		.text = std::move(text),
-		.duration = kPremiumToastDuration,
 		.filter = filter,
+		.duration = kPremiumToastDuration,
 	});
 }
 
@@ -206,29 +205,27 @@ void Stickers::incrementSticker(not_null<DocumentData*> document) {
 	auto &sets = setsRef();
 	auto it = sets.find(Data::Stickers::CloudRecentSetId);
 	if (it == sets.cend()) {
-		if (it == sets.cend()) {
-			it = sets.emplace(
+		it = sets.emplace(
+			Data::Stickers::CloudRecentSetId,
+			std::make_unique<Data::StickersSet>(
+				&session().data(),
 				Data::Stickers::CloudRecentSetId,
-				std::make_unique<Data::StickersSet>(
-					&session().data(),
-					Data::Stickers::CloudRecentSetId,
-					uint64(0), // accessHash
-					uint64(0), // hash
-					tr::lng_recent_stickers(tr::now),
-					QString(),
-					0, // count
-					SetFlag::Special,
-					TimeId(0))).first;
-		} else {
-			it->second->title = tr::lng_recent_stickers(tr::now);
-		}
+				uint64(0), // accessHash
+				uint64(0), // hash
+				tr::lng_recent_stickers(tr::now),
+				QString(),
+				0, // count
+				SetFlag::Special,
+				TimeId(0))).first;
+	} else {
+		it->second->title = tr::lng_recent_stickers(tr::now);
 	}
 	const auto set = it->second.get();
 	auto removedFromEmoji = std::vector<not_null<EmojiPtr>>();
 	auto index = set->stickers.indexOf(document);
 	if (index > 0) {
 		if (set->dates.empty()) {
-			session().api().requestRecentStickersForce();
+			session().api().requestSpecialStickersForce(false, true, false);
 		} else {
 			Assert(set->dates.size() == set->stickers.size());
 			set->dates.erase(set->dates.begin() + index);
@@ -260,7 +257,7 @@ void Stickers::incrementSticker(not_null<DocumentData*> document) {
 				set->emoji[emoji].push_front(document);
 			}
 		} else {
-			session().api().requestRecentStickersForce();
+			session().api().requestSpecialStickersForce(false, true, false);
 		}
 
 		writeRecentStickers = true;
@@ -398,7 +395,6 @@ void Stickers::applyArchivedResult(
 	Ui::Toast::Show(Ui::Toast::Config{
 		.text = { tr::lng_stickers_packs_archived(tr::now) },
 		.st = &st::stickersToast,
-		.multiline = true,
 	});
 	//Ui::show(
 	//	Box<StickersBox>(archived, &session()),
@@ -816,6 +812,25 @@ void Stickers::setPackAndEmoji(
 			set.emoji[emoji] = std::move(p);
 		}
 	}
+}
+
+not_null<StickersSet*> Stickers::collectibleSet() {
+	const auto setId = CollectibleSetId;
+	auto &sets = setsRef();
+	auto it = sets.find(setId);
+	if (it == sets.cend()) {
+		it = sets.emplace(setId, std::make_unique<StickersSet>(
+				&owner(),
+				setId,
+				uint64(0), // accessHash
+				uint64(0), // hash
+				tr::lng_collectible_emoji(tr::now),
+				QString(),
+				0, // count
+				SetFlag::Special,
+				TimeId(0))).first;
+	}
+	return it->second.get();
 }
 
 void Stickers::specialSetReceived(

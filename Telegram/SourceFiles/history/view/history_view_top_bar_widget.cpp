@@ -31,7 +31,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/effects/radial_animation.h"
-#include "ui/boxes/report_box.h" // Ui::ReportReason
+#include "ui/boxes/report_box_graphics.h" // Ui::ReportReason
 #include "ui/text/text.h"
 #include "ui/text/text_options.h"
 #include "ui/painter.h"
@@ -41,9 +41,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_session_controller.h"
 #include "window/window_peer_menu.h"
 #include "calls/calls_instance.h"
+#include "data/stickers/data_custom_emoji.h"
 #include "data/data_peer_values.h"
 #include "data/data_group_call.h" // GroupCall::input.
 #include "data/data_folder.h"
+#include "data/data_forum.h"
 #include "data/data_saved_sublist.h"
 #include "data/data_session.h"
 #include "data/data_stories.h"
@@ -71,10 +73,8 @@ namespace {
 
 constexpr auto kEmojiInteractionSeenDuration = 3 * crl::time(1000);
 
-inline bool HasGroupCallMenu(const not_null<PeerData*> &peer) {
-	return !peer->groupCall()
-		&& ((peer->isChannel() && peer->asChannel()->amCreator())
-			|| (peer->isChat() && peer->asChat()->amCreator()));
+[[nodiscard]] inline bool HasGroupCallMenu(not_null<PeerData*> peer) {
+	return !peer->groupCall() && peer->canManageGroupCall();
 }
 
 QString TopBarNameText(
@@ -288,8 +288,8 @@ void TopBarWidget::groupCall() {
 	}
 }
 
-void TopBarWidget::showChooseMessagesForReport(Ui::ReportReason reason) {
-	setChooseForReportReason(reason);
+void TopBarWidget::showChooseMessagesForReport(Data::ReportInput input) {
+	setChooseForReportReason(input);
 }
 
 void TopBarWidget::clearChooseMessagesForReport() {
@@ -301,12 +301,12 @@ rpl::producer<> TopBarWidget::searchRequest() const {
 }
 
 void TopBarWidget::setChooseForReportReason(
-		std::optional<Ui::ReportReason> reason) {
-	if (_chooseForReportReason == reason) {
+		std::optional<Data::ReportInput> reportInput) {
+	if (_chooseForReportReason == reportInput) {
 		return;
 	}
 	const auto wasNoReason = !_chooseForReportReason;
-	_chooseForReportReason = reason;
+	_chooseForReportReason = reportInput;
 	const auto nowNoReason = !_chooseForReportReason;
 	updateControlsVisibility();
 	updateControlsGeometry();
@@ -449,29 +449,17 @@ void TopBarWidget::paintTopBar(Painter &p) {
 		return;
 	}
 	auto nameleft = _leftTaken;
+	auto statusleft = nameleft;
 	auto nametop = st::topBarArrowPadding.top();
 	auto statustop = st::topBarHeight - st::topBarArrowPadding.bottom() - st::dialogsTextFont->height;
-	auto availableWidth = width()
+	auto namewidth = width()
 		- _rightTaken
 		- nameleft
 		- st::topBarNameRightPadding;
+	auto statuswidth = namewidth;
 
 	if (_chooseForReportReason) {
-		const auto text = [&] {
-			using Reason = Ui::ReportReason;
-			switch (*_chooseForReportReason) {
-			case Reason::Spam: return tr::lng_report_reason_spam(tr::now);
-			case Reason::Violence:
-				return tr::lng_report_reason_violence(tr::now);
-			case Reason::ChildAbuse:
-				return tr::lng_report_reason_child_abuse(tr::now);
-			case Reason::Pornography:
-				return tr::lng_report_reason_pornography(tr::now);
-			case Reason::Copyright:
-				return tr::lng_report_reason_copyright(tr::now);
-			}
-			Unexpected("reason in TopBarWidget::paintTopBar.");
-		}();
+		const auto text = _chooseForReportReason->optionText;
 		p.setPen(st::dialogsNameFg);
 		p.setFont(st::semiboldFont);
 		p.drawTextLeft(nameleft, nametop, width(), text);
@@ -504,7 +492,7 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			p,
 			nameleft,
 			nametop,
-			availableWidth);
+			namewidth);
 
 		p.setFont(st::dialogsTextFont);
 		if (!paintConnectingState(p, nameleft, statustop, width())
@@ -512,7 +500,7 @@ void TopBarWidget::paintTopBar(Painter &p) {
 				p,
 				nameleft,
 				statustop,
-				availableWidth,
+				namewidth,
 				width(),
 				st::historyStatusFgTyping,
 				now)) {
@@ -520,7 +508,7 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			p.drawTextLeft(nameleft, statustop, width(), _customTitleText);
 		}
 	} else if (folder
-		|| (peer && peer->sharedMediaInfo())
+		|| (peer && (peer->sharedMediaInfo() || peer->isVerifyCodes()))
 		|| (_activeChat.section == Section::Scheduled)
 		|| (_activeChat.section == Section::Pinned)) {
 		auto text = (_activeChat.section == Section::Scheduled)
@@ -535,10 +523,12 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			? tr::lng_saved_messages(tr::now)
 			: peer->isRepliesChat()
 			? tr::lng_replies_messages(tr::now)
+			: peer->isVerifyCodes()
+			? tr::lng_verification_codes(tr::now)
 			: peer->name();
 		const auto textWidth = st::historySavedFont->width(text);
-		if (availableWidth < textWidth) {
-			text = st::historySavedFont->elided(text, availableWidth);
+		if (namewidth < textWidth) {
+			text = st::historySavedFont->elided(text, namewidth);
 		}
 		p.setPen(st::dialogsNameFg);
 		p.setFont(st::historySavedFont);
@@ -557,16 +547,16 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			tr::lng_manage_discussion_group(tr::now));
 
 		p.setFont(st::dialogsTextFont);
-		if (!paintConnectingState(p, nameleft, statustop, width())
+		if (!paintConnectingState(p, statusleft, statustop, width())
 			&& !paintSendAction(
 				p,
-				nameleft,
+				statusleft,
 				statustop,
-				availableWidth,
+				statuswidth,
 				width(),
 				st::historyStatusFgTyping,
 				now)) {
-			paintStatus(p, nameleft, statustop, availableWidth, width());
+			paintStatus(p, statusleft, statustop, statuswidth, width());
 		}
 	} else if (namePeer) {
 		if (_titleNameVersion < namePeer->nameVersion()) {
@@ -576,46 +566,57 @@ void TopBarWidget::paintTopBar(Painter &p) {
 				TopBarNameText(namePeer, _activeChat.section),
 				Ui::NameTextOptions());
 		}
-		const auto badgeWidth = _titleBadge.drawGetWidth(
-			p,
-			QRect(
+		if (const auto info = namePeer->botVerifyDetails()) {
+			if (!_titleBadge.ready(info)) {
+				_titleBadge.set(
+					info,
+					namePeer->owner().customEmojiManager().factory(),
+					[=] { update(); });
+			}
+			const auto position = QPoint{ nameleft, nametop };
+			const auto skip = _titleBadge.drawVerified(p, position, st::dialogsVerifiedColors);
+			nameleft += skip + st::dialogsChatTypeSkip;
+			namewidth -= skip + st::dialogsChatTypeSkip;
+		}
+		const auto badgeWidth = _titleBadge.drawGetWidth(p, {
+			.peer = namePeer,
+			.rectForName = QRect(
 				nameleft,
 				nametop,
-				availableWidth,
+				namewidth,
 				st::msgNameStyle.font->height),
-			_title.maxWidth(),
-			width(),
-			{
-				.peer = namePeer,
-				.verified = &st::dialogsVerifiedIcon,
-				.premium = &st::dialogsPremiumIcon.icon,
-				.scam = &st::attentionButtonFg,
-				.premiumFg = &st::dialogsVerifiedIconBg,
-				.customEmojiRepaint = [=] { update(); },
-				.now = now,
-				.paused = _controller->isGifPausedAtLeastFor(
-					Window::GifPauseReason::Any),
-			});
-		const auto namewidth = availableWidth - badgeWidth;
+			.nameWidth = _title.maxWidth(),
+			.outerWidth = width(),
+			.verified = &st::dialogsVerifiedIcon,
+			.premium = &st::dialogsPremiumIcon.icon,
+			.scam = &st::attentionButtonFg,
+			.premiumFg = &st::dialogsVerifiedIconBg,
+			.customEmojiRepaint = [=] { update(); },
+			.now = now,
+			.bothVerifyAndStatus = true,
+			.paused = _controller->isGifPausedAtLeastFor(
+				Window::GifPauseReason::Any),
+		});
+		namewidth -= badgeWidth;
 
 		p.setPen(st::dialogsNameFg);
-		_title.drawElided(
-			p,
-			nameleft,
-			nametop,
-			namewidth);
+		_title.draw(p, {
+			.position = { nameleft, nametop },
+			.availableWidth = namewidth,
+			.elisionLines = 1,
+		});
 
 		p.setFont(st::dialogsTextFont);
-		if (!paintConnectingState(p, nameleft, statustop, width())
+		if (!paintConnectingState(p, statusleft, statustop, width())
 			&& !paintSendAction(
 				p,
-				nameleft,
+				statusleft,
 				statustop,
-				availableWidth,
+				statuswidth,
 				width(),
 				st::historyStatusFgTyping,
 				now)) {
-			paintStatus(p, nameleft, statustop, availableWidth, width());
+			paintStatus(p, statusleft, statustop, statuswidth, width());
 		}
 	}
 }
@@ -714,10 +715,13 @@ void TopBarWidget::mousePressEvent(QMouseEvent *e) {
 		&& !showSelectedState()
 		&& !_chooseForReportReason;
 	if (handleClick) {
+		const auto archiveTop = (_activeChat.section == Section::ChatsList)
+			&& _activeChat.key.folder();
 		if ((_animatingMode && _back->rect().contains(e->pos()))
-			|| (_activeChat.section == Section::ChatsList
-				&& _activeChat.key.folder())) {
-			backClicked();
+			|| archiveTop) {
+			if (!rootChatsListBar()) {
+				backClicked();
+			}
 		} else {
 			infoClicked();
 		}
@@ -890,9 +894,22 @@ void TopBarWidget::setCustomTitle(const QString &title) {
 	}
 }
 
+bool TopBarWidget::rootChatsListBar() const {
+	if (_activeChat.section != Section::ChatsList) {
+		return false;
+	}
+	const auto id = _controller->windowId();
+	const auto separateFolder = id.folder();
+	const auto separateForum = id.forum();
+	const auto active = _activeChat.key;
+	return (separateForum && separateForum->history() == active.history())
+		|| (separateFolder && separateFolder == active.folder());
+}
+
 void TopBarWidget::refreshInfoButton() {
 	if (_activeChat.key.topic()
-		|| _activeChat.section == Section::ChatsList) {
+		|| (_activeChat.section == Section::ChatsList
+			&& !rootChatsListBar())) {
 		_info.destroy();
 	} else if (const auto peer = _activeChat.key.peer()) {
 		auto info = object_ptr<Ui::UserpicButton>(
@@ -919,8 +936,7 @@ int TopBarWidget::countSelectedButtonsTop(float64 selectedShown) {
 
 void TopBarWidget::updateSearchVisibility() {
 	const auto searchAllowedMode = (_activeChat.section == Section::History)
-		|| (_activeChat.section == Section::Replies
-			&& _activeChat.key.topic())
+		|| (_activeChat.section == Section::Replies)
 		|| (_activeChat.section == Section::SavedSublist
 			&& _activeChat.key.sublist());
 	_search->setVisible(searchAllowedMode && !_chooseForReportReason);
@@ -989,6 +1005,14 @@ void TopBarWidget::updateControlsGeometry() {
 		_leftTaken += _back->width();
 	}
 	if (_info && !_info->isHidden()) {
+		if (_back->isHidden() && _narrowRatio > 0.) {
+			const auto &infoSt = st::topBarInfoButton;
+			const auto middle = (_narrowWidth - infoSt.photoSize) / 2;
+			_leftTaken = anim::interpolate(
+				_leftTaken,
+				middle - infoSt.photoPosition.x(),
+				_narrowRatio);
+		}
 		_info->moveToLeft(_leftTaken, otherButtonsTop);
 		_leftTaken += _info->width();
 	} else if (_activeChat.key.topic()
@@ -997,7 +1021,9 @@ void TopBarWidget::updateControlsGeometry() {
 	}
 
 	if (_searchField) {
-		const auto fieldLeft = _leftTaken;
+		const auto fieldLeft = _back->isHidden()
+			? st::topBarArrowPadding.right()
+			: _leftTaken;
 		const auto fieldTop = searchFieldTop
 			+ (height() - _searchField->height()) / 2;
 		const auto fieldRight = st::dialogsFilterSkip
@@ -1075,9 +1101,10 @@ void TopBarWidget::updateControlsVisibility() {
 	_sendNow->setVisible(_canSendNow);
 
 	const auto isOneColumn = _controller->adaptive().isOneColumn();
-	auto backVisible = isOneColumn
-		|| !_controller->content()->stackIsEmpty()
-		|| (_activeChat.section == Section::ChatsList);
+	const auto backVisible = !rootChatsListBar()
+		&& (isOneColumn
+			|| (_activeChat.section == Section::ChatsList)
+			|| !_controller->content()->stackIsEmpty());
 	_back->setVisible(backVisible && !_chooseForReportReason);
 	_cancelChoose->setVisible(_chooseForReportReason.has_value());
 	if (_info) {
@@ -1085,7 +1112,8 @@ void TopBarWidget::updateControlsVisibility() {
 			&& (isOneColumn || !_primaryWindow));
 	}
 	if (_unreadBadge) {
-		_unreadBadge->setVisible(!_chooseForReportReason);
+		_unreadBadge->setVisible(!_chooseForReportReason
+			&& !rootChatsListBar());
 	}
 	const auto topic = _activeChat.key.topic();
 	const auto section = _activeChat.section;
@@ -1150,6 +1178,7 @@ void TopBarWidget::updateControlsVisibility() {
 			if (const auto user = peer->asUser()) {
 				return !user->isSelf()
 					&& !user->isBot()
+					&& !user->isInaccessible()
 					&& !peer->isServiceUser();
 			}
 		}

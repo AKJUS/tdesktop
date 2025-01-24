@@ -211,11 +211,10 @@ void ApplyBotsList(
 		Data::PeerUpdate::Flag::FullInfo);
 }
 
-[[nodiscard]] ChatParticipants::Channels ParseSimilar(
+[[nodiscard]] ChatParticipants::Peers ParseSimilarChannels(
 		not_null<Main::Session*> session,
 		const MTPmessages_Chats &chats) {
-	auto result = ChatParticipants::Channels();
-	std::vector<not_null<ChannelData*>>();
+	auto result = ChatParticipants::Peers();
 	chats.match([&](const auto &data) {
 		const auto &list = data.vchats().v;
 		result.list.reserve(list.size());
@@ -234,10 +233,29 @@ void ApplyBotsList(
 	return result;
 }
 
-[[nodiscard]] ChatParticipants::Channels ParseSimilar(
+[[nodiscard]] ChatParticipants::Peers ParseSimilarChannels(
 		not_null<ChannelData*> channel,
 		const MTPmessages_Chats &chats) {
-	return ParseSimilar(&channel->session(), chats);
+	return ParseSimilarChannels(&channel->session(), chats);
+}
+
+[[nodiscard]] ChatParticipants::Peers ParseSimilarBots(
+		not_null<Main::Session*> session,
+		const MTPusers_Users &users) {
+	auto result = ChatParticipants::Peers();
+	users.match([&](const auto &data) {
+		const auto &list = data.vusers().v;
+		result.list.reserve(list.size());
+		for (const auto &user : list) {
+			result.list.push_back(session->data().processUser(user));
+		}
+		if constexpr (MTPDusers_usersSlice::Is<decltype(data)>()) {
+			if (session->premiumPossible()) {
+				result.more = data.vcount().v - data.vusers().v.size();
+			}
+		}
+	});
+	return result;
 }
 
 } // namespace
@@ -264,14 +282,24 @@ ChatParticipant::ChatParticipant(
 		_rank = qs(data.vrank().value_or_empty());
 		_rights = ChatAdminRightsInfo(data.vadmin_rights());
 		_by = peerToUser(peerFromUser(data.vpromoted_by()));
+		_date = data.vdate().v;
 	}, [&](const MTPDchannelParticipantSelf &data) {
 		_type = Type::Member;
+		_date = data.vdate().v;
 		_by = peerToUser(peerFromUser(data.vinviter_id()));
+		if (data.vsubscription_until_date()) {
+			_subscriptionDate = data.vsubscription_until_date()->v;
+		}
 	}, [&](const MTPDchannelParticipant &data) {
 		_type = Type::Member;
+		_date = data.vdate().v;
+		if (data.vsubscription_until_date()) {
+			_subscriptionDate = data.vsubscription_until_date()->v;
+		}
 	}, [&](const MTPDchannelParticipantBanned &data) {
 		_restrictions = ChatRestrictionsInfo(data.vbanned_rights());
 		_by = peerToUser(peerFromUser(data.vkicked_by()));
+		_date = data.vdate().v;
 
 		_type = (_restrictions.flags & ChatRestriction::ViewMessages)
 			? Type::Banned
@@ -346,6 +374,24 @@ ChatRestrictionsInfo ChatParticipant::restrictions() const {
 
 ChatAdminRightsInfo ChatParticipant::rights() const {
 	return _rights;
+}
+
+TimeId ChatParticipant::subscriptionDate() const {
+	return _subscriptionDate;
+}
+
+TimeId ChatParticipant::promotedSince() const {
+	return (_type == Type::Admin) ? _date : TimeId(0);
+}
+
+TimeId ChatParticipant::restrictedSince() const {
+	return (_type == Type::Restricted || _type == Type::Banned)
+		? _date
+		: TimeId(0);
+}
+
+TimeId ChatParticipant::memberSince() const {
+	return (_type == Type::Member) ? _date : TimeId(0);
 }
 
 ChatParticipant::Type ChatParticipant::type() const {
@@ -754,52 +800,65 @@ void ChatParticipants::unblock(
 	_kickRequests.emplace(kick, requestId);
 }
 
-void ChatParticipants::loadSimilarChannels(not_null<ChannelData*> channel) {
-	if (!channel->isBroadcast()) {
-		return;
-	} else if (const auto i = _similar.find(channel); i != end(_similar)) {
+void ChatParticipants::loadSimilarPeers(not_null<PeerData*> peer) {
+	if (const auto i = _similar.find(peer); i != end(_similar)) {
 		if (i->second.requestId
-			|| !i->second.channels.more
-			|| !channel->session().premium()) {
+			|| !i->second.peers.more
+			|| !peer->session().premium()) {
 			return;
 		}
 	}
-	using Flag = MTPchannels_GetChannelRecommendations::Flag;
-	_similar[channel].requestId = _api.request(
-		MTPchannels_GetChannelRecommendations(
-			MTP_flags(Flag::f_channel),
-			channel->inputChannel)
-	).done([=](const MTPmessages_Chats &result) {
-		auto &similar = _similar[channel];
-		similar.requestId = 0;
-		auto parsed = ParseSimilar(channel, result);
-		if (similar.channels == parsed) {
-			return;
-		}
-		similar.channels = std::move(parsed);
-		if (const auto history = channel->owner().historyLoaded(channel)) {
-			if (const auto item = history->joinedMessageInstance()) {
-				history->owner().requestItemResize(item);
+	if (const auto channel = peer->asBroadcast()) {
+		using Flag = MTPchannels_GetChannelRecommendations::Flag;
+		_similar[peer].requestId = _api.request(
+			MTPchannels_GetChannelRecommendations(
+				MTP_flags(Flag::f_channel),
+				channel->inputChannel)
+		).done([=](const MTPmessages_Chats &result) {
+			auto &similar = _similar[channel];
+			similar.requestId = 0;
+			auto parsed = ParseSimilarChannels(channel, result);
+			if (similar.peers == parsed) {
+				return;
 			}
-		}
-		_similarLoaded.fire_copy(channel);
-	}).send();
+			similar.peers = std::move(parsed);
+			if (const auto history = channel->owner().historyLoaded(channel)) {
+				if (const auto item = history->joinedMessageInstance()) {
+					history->owner().requestItemResize(item);
+				}
+			}
+			_similarLoaded.fire_copy(channel);
+		}).send();
+	} else if (const auto bot = peer->asBot()) {
+		_similar[peer].requestId = _api.request(
+			MTPbots_GetBotRecommendations(bot->inputUser)
+		).done([=](const MTPusers_Users &result) {
+			auto &similar = _similar[peer];
+			similar.requestId = 0;
+			auto parsed = ParseSimilarBots(&peer->session(), result);
+			if (similar.peers == parsed) {
+				return;
+			}
+			similar.peers = std::move(parsed);
+			_similarLoaded.fire_copy(peer);
+		}).send();
+	}
 }
 
-auto ChatParticipants::similar(not_null<ChannelData*> channel)
--> const Channels & {
-	const auto i = channel->isBroadcast()
-		? _similar.find(channel)
+auto ChatParticipants::similar(not_null<PeerData*> peer)
+-> const Peers & {
+	const auto i = (peer->isBroadcast() || peer->isBot())
+		? _similar.find(peer)
 		: end(_similar);
 	if (i != end(_similar)) {
-		return i->second.channels;
+		return i->second.peers;
 	}
-	static const auto empty = Channels();
+	static const auto empty = Peers();
 	return empty;
 }
 
 auto ChatParticipants::similarLoaded() const
--> rpl::producer<not_null<ChannelData*>> {
+-> rpl::producer<not_null<PeerData*>> {
 	return _similarLoaded.events();
 }
 
@@ -813,15 +872,15 @@ void ChatParticipants::loadRecommendations() {
 			MTP_inputChannelEmpty())
 	).done([=](const MTPmessages_Chats &result) {
 		_recommendations.requestId = 0;
-		auto parsed = ParseSimilar(_session, result);
-		_recommendations.channels = std::move(parsed);
-		_recommendations.channels.more = 0;
+		auto parsed = ParseSimilarChannels(_session, result);
+		_recommendations.peers = std::move(parsed);
+		_recommendations.peers.more = 0;
 		_recommendationsLoaded = true;
 	}).send();
 }
 
-const ChatParticipants::Channels &ChatParticipants::recommendations() const {
-	return _recommendations.channels;
+const ChatParticipants::Peers &ChatParticipants::recommendations() const {
+	return _recommendations.peers;
 }
 
 rpl::producer<> ChatParticipants::recommendationsLoaded() const {

@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/chat/chat_theme.h"
 #include "ui/painter.h"
+#include "ui/rect.h"
 #include "ui/power_saving.h"
 #include "history/history.h"
 #include "history/history_item.h"
@@ -651,6 +652,14 @@ QString ReplyMarkupClickHandler::buttonText() const {
 }
 
 QString ReplyMarkupClickHandler::tooltip() const {
+	if (const auto button = getButton()) {
+		if (button->type == HistoryMessageMarkupButton::Type::CopyText) {
+			return tr::lng_bot_copy_text_tooltip(
+				tr::now,
+				lt_text,
+				st::wrap_rtl(QString::fromUtf8(button->data)));
+		}
+	}
 	const auto button = getUrlButton();
 	const auto url = button ? QString::fromUtf8(button->data) : QString();
 	const auto text = _fullDisplayed ? QString() : buttonText();
@@ -1072,7 +1081,22 @@ void ReplyKeyboard::Style::paintButton(
 		tx += (tw - st::botKbStyle.font->elidew) / 2;
 		tw = st::botKbStyle.font->elidew;
 	}
-	button.text.drawElided(p, tx, rect.y() + _st->textTop + ((rect.height() - _st->height) / 2), tw, 1, style::al_top);
+	button.text.drawElided(
+		p,
+		tx,
+		rect.y() + _st->textTop + ((rect.height() - _st->height) / 2),
+		tw,
+		1,
+		style::al_top);
+	if (button.type == HistoryMessageMarkupButton::Type::SimpleWebView) {
+		const auto &icon = st::markupWebview;
+		st::markupWebview.paint(
+			p,
+			rect::right(rect) - icon.width() - _st->padding / 2,
+			rect.y() + _st->padding / 2,
+			rect.width(),
+			p.pen().color());
+	}
 }
 
 void HistoryMessageReplyMarkup::createForwarded(
@@ -1091,8 +1115,8 @@ void HistoryMessageReplyMarkup::updateData(
 bool HistoryMessageReplyMarkup::hiddenBy(Data::Media *media) const {
 	if (media && (data.flags & ReplyMarkupFlag::OnlyBuyButton)) {
 		if (const auto invoice = media->invoice()) {
-			if (invoice->extendedPreview
-				&& (!invoice->extendedMedia || !invoice->receiptMsgId)) {
+			if (HasUnpaidMedia(*invoice)
+				|| (HasExtendedMedia(*invoice) && !invoice->receiptMsgId)) {
 				return true;
 			}
 		}

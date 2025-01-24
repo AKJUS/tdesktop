@@ -57,13 +57,14 @@ rpl::producer<not_null<PeerData*>> MigratedOrMeValue(
 [[nodiscard]] rpl::producer<TextWithEntities> PhoneOrHiddenValue(
 	not_null<UserData*> user);
 [[nodiscard]] rpl::producer<TextWithEntities> UsernameValue(
-	not_null<UserData*> user,
+	not_null<PeerData*> peer,
 	bool primary = false);
 [[nodiscard]] rpl::producer<std::vector<TextWithEntities>> UsernamesValue(
 	not_null<PeerData*> peer);
 [[nodiscard]] QString UsernameUrl(
 	not_null<PeerData*> peer,
-	const QString &username);
+	const QString &username,
+	bool link = false);
 [[nodiscard]] TextWithEntities AboutWithEntities(
 	not_null<PeerData*> peer,
 	const QString &value);
@@ -116,9 +117,11 @@ struct LinkWithUrl {
 	Storage::SharedMediaType type);
 [[nodiscard]] rpl::producer<int> CommonGroupsCountValue(
 	not_null<UserData*> user);
-[[nodiscard]] rpl::producer<int> SimilarChannelsCountValue(
-	not_null<ChannelData*> channel);
+[[nodiscard]] rpl::producer<int> SimilarPeersCountValue(
+	not_null<PeerData*> peer);
 [[nodiscard]] rpl::producer<int> SavedSublistCountValue(
+	not_null<PeerData*> peer);
+[[nodiscard]] rpl::producer<int> PeerGiftsCountValue(
 	not_null<PeerData*> peer);
 [[nodiscard]] rpl::producer<bool> CanAddMemberValue(
 	not_null<PeerData*> peer);
@@ -129,7 +132,7 @@ struct LinkWithUrl {
 
 enum class BadgeType;
 [[nodiscard]] rpl::producer<BadgeType> BadgeValue(not_null<PeerData*> peer);
-[[nodiscard]] rpl::producer<DocumentId> EmojiStatusIdValue(
+[[nodiscard]] rpl::producer<EmojiStatusId> EmojiStatusIdValue(
 	not_null<PeerData*> peer);
 
 [[nodiscard]] rpl::producer<QString> BirthdayLabelText(

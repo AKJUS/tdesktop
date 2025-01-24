@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/ui_integration.h"
 #include "data/business/data_business_chatbots.h"
 #include "data/notify/data_notify_settings.h"
+#include "data/data_emoji_statuses.h"
 #include "data/data_peer.h"
 #include "data/data_user.h"
 #include "data/data_chat.h"
@@ -98,7 +99,7 @@ namespace {
 				text.size(),
 				Data::SerializeCustomEmojiId(document)) },
 		};
-	});
+	}) | rpl::map_error_to_done();
 }
 
 [[nodiscard]] rpl::producer<TextWithEntities> PeerCustomStatus(
@@ -112,8 +113,11 @@ namespace {
 		Data::PeerUpdate::Flag::EmojiStatus
 	) | rpl::map([=] {
 		const auto id = peer->emojiStatusId();
-		return id
-			? ResolveIsCustom(owner, id)
+		return id.collectible
+			? rpl::single(Ui::Text::SingleCustomEmoji(
+				Data::EmojiStatusCustomId(id)))
+			: id.documentId
+			? ResolveIsCustom(owner, id.documentId)
 			: rpl::single(TextWithEntities());
 	}) | rpl::flatten_latest() | rpl::distinct_until_changed();
 }
@@ -983,19 +987,26 @@ int BusinessBotStatus::Bar::resizeGetHeight(int newWidth) {
 	const auto &st = st::defaultPeerList.item;
 	_settings->moveToRight(0, 0, newWidth);
 	if (_userpic) {
-		_userpic->moveToLeft(st.photoPosition.x(), st.photoPosition.y());
+		_userpic->moveToLeft(
+			st.photoPosition.x(),
+			st.photoPosition.y(),
+			newWidth);
 	}
 	auto available = newWidth - _settings->width() - st.namePosition.x();
 	if (!_togglePaused->isHidden()) {
 		_togglePaused->moveToRight(
 			_settings->width(),
-			(st.height - _togglePaused->height()) / 2);
+			(st.height - _togglePaused->height()) / 2,
+			newWidth);
 		available -= _togglePaused->width();
 	}
 	_name->resizeToWidth(available);
-	_name->moveToLeft(st.namePosition.x(), st.namePosition.y());
+	_name->moveToLeft(st.namePosition.x(), st.namePosition.y(), newWidth);
 	_status->resizeToWidth(available);
-	_status->moveToLeft(st.statusPosition.x(), st.statusPosition.y());
+	_status->moveToLeft(
+		st.statusPosition.x(),
+		st.statusPosition.y(),
+		newWidth);
 	return st.height;
 }
 

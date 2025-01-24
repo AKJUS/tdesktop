@@ -23,6 +23,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Core {
 namespace {
 
+constexpr auto kInitialVideoQuality = 480; // Start with SD.
+
 [[nodiscard]] WindowPosition Deserialize(const QByteArray &data) {
 	QDataStream stream(data);
 	stream.setVersion(QDataStream::Qt_5_1);
@@ -88,6 +90,21 @@ void LogPosition(const WindowPosition &position, const QString &name) {
 	return RecentEmojiDocument{ id, (test == '1') };
 }
 
+[[nodiscard]] quint32 SerializeVideoQuality(Media::VideoQuality quality) {
+	static_assert(sizeof(Media::VideoQuality) == sizeof(uint32));
+	auto result = uint32();
+	const auto data = static_cast<const void*>(&quality);
+	memcpy(&result, data, sizeof(quality));
+	return result;
+}
+
+[[nodiscard]] Media::VideoQuality DeserializeVideoQuality(quint32 value) {
+	auto result = Media::VideoQuality();
+	const auto data = static_cast<void*>(&result);
+	memcpy(data, &value, sizeof(result));
+	return (result.height <= 4320) ? result : Media::VideoQuality();
+}
+
 } // namespace
 
 [[nodiscard]] WindowPosition AdjustToScale(
@@ -124,7 +141,8 @@ Settings::Settings()
 , _floatPlayerColumn(Window::Column::Second)
 , _floatPlayerCorner(RectPart::TopRight)
 , _dialogsWithChatWidthRatio(DefaultDialogsWidthRatio())
-, _dialogsNoChatWidthRatio(DefaultDialogsWidthRatio()) {
+, _dialogsNoChatWidthRatio(DefaultDialogsWidthRatio())
+, _videoQuality({ .height = kInitialVideoQuality }) {
 }
 
 Settings::~Settings() = default;
@@ -220,7 +238,9 @@ QByteArray Settings::serialize() const {
 		+ Serialize::bytearraySize(ivPosition)
 		+ Serialize::stringSize(noWarningExtensions)
 		+ Serialize::stringSize(_customFontFamily)
-		+ sizeof(qint32);
+		+ sizeof(qint32) * 3
+		+ Serialize::bytearraySize(_tonsiteStorageToken)
+		+ sizeof(qint32) * 7;
 
 	auto result = QByteArray();
 	result.reserve(size);
@@ -257,7 +277,7 @@ QByteArray Settings::serialize() const {
 		}
 		stream
 			<< qint32(_sendFilesWay.serialize())
-			<< qint32(_sendSubmitWay)
+			<< qint32(_sendSubmitWay.current())
 			<< qint32(_includeMutedCounter ? 1 : 0)
 			<< qint32(_countUnreadMessages ? 1 : 0)
 			<< qint32(1) // legacy exe launch warning
@@ -289,7 +309,7 @@ QByteArray Settings::serialize() const {
 			<< qint32(_thirdSectionExtendedBy)
 			<< qint32(_notifyFromAll ? 1 : 0)
 			<< qint32(_nativeWindowFrame.current() ? 1 : 0)
-			<< qint32(_systemDarkModeEnabled.current() ? 1 : 0)
+			<< qint32(0) // Legacy system dark mode
 			<< _cameraDeviceId.current()
 			<< qint32(_ipRevealWarning ? 1 : 0)
 			<< qint32(_groupCallPushToTalk ? 1 : 0)
@@ -317,7 +337,7 @@ QByteArray Settings::serialize() const {
 			<< _photoEditorBrush
 			<< qint32(_groupCallNoiseSuppression ? 1 : 0)
 			<< qint32(SerializePlaybackSpeed(_voicePlaybackSpeed))
-			<< qint32(_closeToTaskbar.current() ? 1 : 0)
+			<< qint32(_closeBehavior)
 			<< _customDeviceModel.current()
 			<< qint32(_playerRepeatMode.current())
 			<< qint32(_playerOrderMode.current())
@@ -371,7 +391,17 @@ QByteArray Settings::serialize() const {
 			<< qint32(std::clamp(
 				qRound(_dialogsNoChatWidthRatio.current() * 1000000),
 				0,
-				1000000));
+				1000000))
+			<< qint32(_systemUnlockEnabled ? 1 : 0)
+			<< qint32(!_weatherInCelsius ? 0 : *_weatherInCelsius ? 1 : 2)
+			<< _tonsiteStorageToken
+			<< qint32(_includeMutedCounterFolders ? 1 : 0)
+			<< qint32(_chatFiltersHorizontal.current() ? 1 : 0)
+			<< qint32(_skipToastsInFocus ? 1 : 0)
+			<< qint32(_recordVideoMessages ? 1 : 0)
+			<< SerializeVideoQuality(_videoQuality)
+			<< qint32(_ivZoom.current())
+			<< qint32(_systemDarkModeEnabled.current() ? 1 : 0);
 	}
 
 	Ensures(result.size() == size);
@@ -417,8 +447,9 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	qint32 soundOverridesCount = 0;
 	base::flat_map<QString, QString> soundOverrides;
 	qint32 sendFilesWay = _sendFilesWay.serialize();
-	qint32 sendSubmitWay = static_cast<qint32>(_sendSubmitWay);
+	qint32 sendSubmitWay = static_cast<qint32>(_sendSubmitWay.current());
 	qint32 includeMutedCounter = _includeMutedCounter ? 1 : 0;
+	qint32 includeMutedCounterFolders = _includeMutedCounterFolders ? 1 : 0;
 	qint32 countUnreadMessages = _countUnreadMessages ? 1 : 0;
 	std::optional<QString> noWarningExtensions;
 	qint32 legacyExeLaunchWarning = 1;
@@ -462,7 +493,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	QByteArray proxy;
 	qint32 hiddenGroupCallTooltips = qint32(_hiddenGroupCallTooltips.value());
 	QByteArray photoEditorBrush = _photoEditorBrush;
-	qint32 closeToTaskbar = _closeToTaskbar.current() ? 1 : 0;
+	qint32 closeBehavior = qint32(_closeBehavior);
 	QString customDeviceModel = _customDeviceModel.current();
 	qint32 playerRepeatMode = static_cast<qint32>(_playerRepeatMode.current());
 	qint32 playerOrderMode = static_cast<qint32>(_playerOrderMode.current());
@@ -491,6 +522,14 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	qint32 ttlVoiceClickTooltipHidden = _ttlVoiceClickTooltipHidden.current() ? 1 : 0;
 	QByteArray ivPosition;
 	QString customFontFamily = _customFontFamily;
+	qint32 systemUnlockEnabled = _systemUnlockEnabled ? 1 : 0;
+	qint32 weatherInCelsius = !_weatherInCelsius ? 0 : *_weatherInCelsius ? 1 : 2;
+	QByteArray tonsiteStorageToken = _tonsiteStorageToken;
+	qint32 ivZoom = _ivZoom.current();
+	qint32 skipToastsInFocus = _skipToastsInFocus ? 1 : 0;
+	qint32 recordVideoMessages = _recordVideoMessages ? 1 : 0;
+	quint32 videoQuality = SerializeVideoQuality(_videoQuality);
+	quint32 chatFiltersHorizontal = _chatFiltersHorizontal.current() ? 1 : 0;
 
 	stream >> themesAccentColors;
 	if (!stream.atEnd()) {
@@ -572,6 +611,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 		stream >> nativeWindowFrame;
 	}
 	if (!stream.atEnd()) {
+		// Read over this one below, if was in the file.
 		stream >> systemDarkModeEnabled;
 	}
 	if (!stream.atEnd()) {
@@ -649,7 +689,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 		stream >> voicePlaybackSpeed;
 	}
 	if (!stream.atEnd()) {
-		stream >> closeToTaskbar;
+		stream >> closeBehavior;
 	}
 	if (!stream.atEnd()) {
 		stream >> customDeviceModel;
@@ -788,6 +828,36 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 			0.,
 			1.);
 	}
+	if (!stream.atEnd()) {
+		stream >> systemUnlockEnabled;
+	}
+	if (!stream.atEnd()) {
+		stream >> weatherInCelsius;
+	}
+	if (!stream.atEnd()) {
+		stream >> tonsiteStorageToken;
+	}
+	if (!stream.atEnd()) {
+		stream >> includeMutedCounterFolders;
+	}
+	if (!stream.atEnd()) {
+		stream >> chatFiltersHorizontal;
+	}
+	if (!stream.atEnd()) {
+		stream >> skipToastsInFocus;
+	}
+	if (!stream.atEnd()) {
+		stream >> recordVideoMessages;
+	}
+	if (!stream.atEnd()) {
+		stream >> videoQuality;
+	}
+	if (!stream.atEnd()) {
+		stream >> ivZoom;
+	}
+	if (!stream.atEnd()) {
+		stream >> systemDarkModeEnabled;
+	}
 	if (stream.status() != QDataStream::Ok) {
 		LOG(("App Error: "
 			"Bad data for Core::Settings::constructFromSerialized()"));
@@ -828,6 +898,7 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	case ScreenCorner::BottomLeft: _notificationsCorner = uncheckedNotificationsCorner; break;
 	}
 	_includeMutedCounter = (includeMutedCounter == 1);
+	_includeMutedCounterFolders = (includeMutedCounterFolders == 1);
 	_countUnreadMessages = (countUnreadMessages == 1);
 	_notifyAboutPinned = (notifyAboutPinned == 1);
 	_autoLock = autoLock;
@@ -848,8 +919,6 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 	case Ui::InputSubmitSettings::Enter:
 	case Ui::InputSubmitSettings::CtrlEnter: _sendSubmitWay = uncheckedSendSubmitWay; break;
 	}
-	_includeMutedCounter = (includeMutedCounter == 1);
-	_countUnreadMessages = (countUnreadMessages == 1);
 	if (noWarningExtensions) {
 		const auto list = noWarningExtensions->mid(0, 10240)
 			.split(' ', Qt::SkipEmptyParts)
@@ -929,7 +998,12 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 				: Tooltip(0));
 	}();
 	_photoEditorBrush = photoEditorBrush;
-	_closeToTaskbar = (closeToTaskbar == 1);
+	const auto uncheckedCloseBehavior = static_cast<CloseBehavior>(closeBehavior);
+	switch (uncheckedCloseBehavior) {
+	case CloseBehavior::CloseToTaskbar:
+	case CloseBehavior::RunInBackground:
+	case CloseBehavior::Quit: _closeBehavior = uncheckedCloseBehavior; break;
+	}
 	_customDeviceModel = customDeviceModel;
 	_accountsOrder = accountsOrder;
 	const auto uncheckedPlayerRepeatMode = static_cast<Media::RepeatMode>(playerRepeatMode);
@@ -995,6 +1069,16 @@ void Settings::addFromSerialized(const QByteArray &serialized) {
 		_ivPosition = Deserialize(ivPosition);
 	}
 	_customFontFamily = customFontFamily;
+	_systemUnlockEnabled = (systemUnlockEnabled == 1);
+	_weatherInCelsius = !weatherInCelsius
+		? std::optional<bool>()
+		: (weatherInCelsius == 1);
+	_tonsiteStorageToken = tonsiteStorageToken;
+	_ivZoom = ivZoom;
+	_skipToastsInFocus = (skipToastsInFocus == 1);
+	_recordVideoMessages = (recordVideoMessages == 1);
+	_videoQuality = DeserializeVideoQuality(videoQuality);
+	_chatFiltersHorizontal = (chatFiltersHorizontal == 1);
 }
 
 QString Settings::getSoundPath(const QString &key) const {
@@ -1321,9 +1405,11 @@ void Settings::resetOnLastLogout() {
 	_flashBounceNotify = true;
 	_notifyView = NotifyView::ShowPreview;
 	//_nativeNotifications = std::nullopt;
+	//_skipToastsInFocus = false;
 	//_notificationsCount = 3;
 	//_notificationsCorner = ScreenCorner::BottomRight;
 	_includeMutedCounter = true;
+	_includeMutedCounterFolders = true;
 	_countUnreadMessages = true;
 	_notifyAboutPinned = true;
 	//_autoLock = 3600;
@@ -1377,10 +1463,13 @@ void Settings::resetOnLastLogout() {
 	_thirdColumnWidth = kDefaultThirdColumnWidth; // p-w
 	_notifyFromAll = true;
 	_tabbedReplacedWithInfo = false; // per-window
-	_systemDarkModeEnabled = false;
 	_hiddenGroupCallTooltips = 0;
 	_storiesClickTooltipHidden = false;
 	_ttlVoiceClickTooltipHidden = false;
+	_ivZoom = 100;
+	_recordVideoMessages = false;
+	_videoQuality = {};
+	_chatFiltersHorizontal = false;
 
 	_recentEmojiPreload.clear();
 	_recentEmoji.clear();
@@ -1436,6 +1525,14 @@ void Settings::setNativeNotifications(bool value) {
 	_nativeNotifications = (value == Platform::Notifications::ByDefault())
 		? std::nullopt
 		: std::make_optional(value);
+}
+
+bool Settings::skipToastsInFocus() const {
+	return _skipToastsInFocus;
+}
+
+void Settings::setSkipToastsInFocus(bool value) {
+	_skipToastsInFocus = value;
 }
 
 void Settings::setTranslateButtonEnabled(bool value) {
@@ -1516,8 +1613,48 @@ auto Settings::skipTranslationLanguagesValue() const
 void Settings::setRememberedDeleteMessageOnlyForYou(bool value) {
 	_rememberedDeleteMessageOnlyForYou = value;
 }
+
 bool Settings::rememberedDeleteMessageOnlyForYou() const {
 	return _rememberedDeleteMessageOnlyForYou;
+}
+
+int Settings::ivZoom() const {
+	return _ivZoom.current();
+}
+
+rpl::producer<int> Settings::ivZoomValue() const {
+	return _ivZoom.value();
+}
+
+void Settings::setIvZoom(int value) {
+#ifdef Q_OS_WIN
+	constexpr auto kMin = 25;
+	constexpr auto kMax = 500;
+#else
+	constexpr auto kMin = 30;
+	constexpr auto kMax = 200;
+#endif
+	_ivZoom = std::clamp(value, kMin, kMax);
+}
+
+Media::VideoQuality Settings::videoQuality() const {
+	return _videoQuality;
+}
+
+void Settings::setVideoQuality(Media::VideoQuality value) {
+	_videoQuality = value;
+}
+
+bool Settings::chatFiltersHorizontal() const {
+	return _chatFiltersHorizontal.current();
+}
+
+rpl::producer<bool> Settings::chatFiltersHorizontalChanges() const {
+	return _chatFiltersHorizontal.changes();
+}
+
+void Settings::setChatFiltersHorizontal(bool value) {
+	_chatFiltersHorizontal = value;
 }
 
 } // namespace Core

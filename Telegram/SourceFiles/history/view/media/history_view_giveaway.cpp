@@ -21,16 +21,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item_helpers.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "ui/effects/credits_graphics.h"
 #include "ui/text/text_utilities.h"
 #include "styles/style_chat.h"
 
 namespace HistoryView {
 
+constexpr auto kOutlineRatio = 0.85;
+
 auto GenerateGiveawayStart(
 	not_null<Element*> parent,
 	not_null<Data::GiveawayStart*> data)
--> Fn<void(Fn<void(std::unique_ptr<MediaGenericPart>)>)> {
-	return [=](Fn<void(std::unique_ptr<MediaGenericPart>)> push) {
+-> Fn<void(
+		not_null<MediaGeneric*>,
+		Fn<void(std::unique_ptr<MediaGenericPart>)>)> {
+	return [=](
+			not_null<MediaGeneric*> media,
+			Fn<void(std::unique_ptr<MediaGenericPart>)> push) {
 		const auto months = data->months;
 		const auto quantity = data->quantity;
 
@@ -49,10 +56,20 @@ auto GenerateGiveawayStart(
 			nullptr,
 			sticker,
 			st::chatGiveawayStickerPadding,
-			tr::lng_prizes_badge(
-				tr::now,
-				lt_amount,
-				QString::number(quantity))));
+			data->credits
+				? QString::number(data->credits)
+				: tr::lng_prizes_badge(
+					tr::now,
+					lt_amount,
+					QString::number(quantity)),
+			data->credits
+				? Ui::CreditsWhiteDoubledIcon(
+					st::chatGiveawayCreditsIconHeight,
+					kOutlineRatio)
+				: QImage(),
+			data->credits
+				? std::make_optional(st::creditsBg3->c)
+				: std::nullopt));
 
 		auto pushText = [&](
 				TextWithEntities text,
@@ -61,6 +78,7 @@ auto GenerateGiveawayStart(
 			push(std::make_unique<MediaGenericTextPart>(
 				std::move(text),
 				margins,
+				st::defaultTextStyle,
 				links));
 		};
 		pushText(
@@ -83,8 +101,29 @@ auto GenerateGiveawayStart(
 				st::chatGiveawayPrizesWithPadding));
 		}
 
-		pushText(
-			tr::lng_prizes_about(
+		pushText((data->credits && (quantity == 1))
+			? tr::lng_prizes_credits_about_single(
+				tr::now,
+				lt_amount,
+				tr::lng_prizes_credits_about_amount(
+					tr::now,
+					lt_count,
+					data->credits,
+					Ui::Text::RichLangValue),
+				Ui::Text::RichLangValue)
+			: (data->credits && (quantity > 1))
+			? tr::lng_prizes_credits_about(
+				tr::now,
+				lt_count,
+				quantity,
+				lt_amount,
+				tr::lng_prizes_credits_about_amount(
+					tr::now,
+					lt_count,
+					data->credits,
+					Ui::Text::RichLangValue),
+				Ui::Text::RichLangValue)
+			: tr::lng_prizes_about(
 				tr::now,
 				lt_count,
 				quantity,
@@ -166,8 +205,12 @@ auto GenerateGiveawayStart(
 auto GenerateGiveawayResults(
 	not_null<Element*> parent,
 	not_null<Data::GiveawayResults*> data)
--> Fn<void(Fn<void(std::unique_ptr<MediaGenericPart>)>)> {
-	return [=](Fn<void(std::unique_ptr<MediaGenericPart>)> push) {
+-> Fn<void(
+		not_null<MediaGeneric*>,
+		Fn<void(std::unique_ptr<MediaGenericPart>)>)> {
+	return [=](
+			not_null<MediaGeneric*> media,
+			Fn<void(std::unique_ptr<MediaGenericPart>)> push) {
 		const auto quantity = data->winnersCount;
 
 		using Data = StickerWithBadgePart::Data;
@@ -178,6 +221,7 @@ auto GenerateGiveawayResults(
 			return Data{
 				.sticker = packs.lookup(emoji, 0),
 				.skipTop = st::chatGiveawayWinnersTopSkip,
+				.size = st::maxAnimatedEmojiSize,
 				.singleTimePlayback = true,
 			};
 		};
@@ -186,10 +230,20 @@ auto GenerateGiveawayResults(
 			nullptr,
 			sticker,
 			st::chatGiveawayStickerPadding,
-			tr::lng_prizes_badge(
-				tr::now,
-				lt_amount,
-				QString::number(quantity))));
+			data->credits
+				? QString::number(data->credits)
+				: tr::lng_prizes_badge(
+					tr::now,
+					lt_amount,
+					QString::number(quantity)),
+			data->credits
+				? Ui::CreditsWhiteDoubledIcon(
+					st::chatGiveawayCreditsIconHeight,
+					kOutlineRatio)
+				: QImage(),
+			data->credits
+				? std::make_optional(st::creditsBg3->c)
+				: std::nullopt));
 
 		auto pushText = [&](
 				TextWithEntities text,
@@ -198,11 +252,14 @@ auto GenerateGiveawayResults(
 			push(std::make_unique<MediaGenericTextPart>(
 				std::move(text),
 				margins,
+				st::defaultTextStyle,
 				links));
 		};
+		const auto isSingleWinner = (data->winnersCount == 1);
 		pushText(
-			Ui::Text::Bold(
-				tr::lng_prizes_results_title(tr::now)),
+			(isSingleWinner
+				? tr::lng_prizes_results_title_one
+				: tr::lng_prizes_results_title)(tr::now, Ui::Text::Bold),
 			st::chatGiveawayPrizesTitleMargin);
 		const auto showGiveawayHandler = JumpToMessageClickHandler(
 			data->channel,
@@ -219,7 +276,9 @@ auto GenerateGiveawayResults(
 			st::chatGiveawayPrizesMargin,
 			{ { 1, showGiveawayHandler } });
 		pushText(
-			Ui::Text::Bold(tr::lng_prizes_results_winners(tr::now)),
+			(isSingleWinner
+				? tr::lng_prizes_results_winner
+				: tr::lng_prizes_results_winners)(tr::now, Ui::Text::Bold),
 			st::chatGiveawayPrizesTitleMargin);
 
 		push(std::make_unique<PeerBubbleListPart>(
@@ -233,8 +292,20 @@ auto GenerateGiveawayResults(
 					data->winnersCount - data->winners.size())),
 				st::chatGiveawayNoCountriesTitleMargin);
 		}
-		pushText({ data->unclaimedCount
+		pushText({ (data->credits && isSingleWinner)
+			? tr::lng_prizes_credits_results_one(
+				tr::now,
+				lt_count,
+				data->credits)
+			: (data->credits && !isSingleWinner)
+			? tr::lng_prizes_credits_results_all(
+				tr::now,
+				lt_count,
+				data->credits)
+			: data->unclaimedCount
 			? tr::lng_prizes_results_some(tr::now)
+			: isSingleWinner
+			? tr::lng_prizes_results_one(tr::now)
 			: tr::lng_prizes_results_all(tr::now)
 		}, st::chatGiveawayEndDateMargin);
 	};

@@ -60,9 +60,7 @@ giveawayGiftCodeQuantitySubtitle: FlatLabel(defaultFlatLabel) {
 	align: align(right);
 }
 giveawayGiftCodeQuantityFloat: FlatLabel(defaultFlatLabel) {
-	style: TextStyle(semiboldTextStyle) {
-		font: font(13px);
-	}
+	style: semiboldTextStyle;
 	textFg: windowActiveTextFg;
 	minWidth: 50px;
 	align: align(center);
@@ -80,24 +78,18 @@ giveawayGiftCodeTable: Table(defaultTable) {
 	labelMinWidth: 91px;
 }
 giveawayGiftCodeTableMargin: margins(24px, 4px, 24px, 4px);
-giveawayGiftCodeLabel: FlatLabel(defaultFlatLabel) {
-	textFg: menuIconColor;
-	maxHeight: 24px;
-	style: TextStyle(semiboldTextStyle) {
-		font: font(12px semibold);
-	}
-}
 giveawayGiftCodeLabelMargin: margins(13px, 10px, 13px, 10px);
-giveawayGiftCodeValue: FlatLabel(defaultFlatLabel) {
-	maxHeight: 24px;
+giveawayGiftCodeValueMultiline: FlatLabel(defaultTableValue) {
+	minWidth: 128px;
+	maxHeight: 100px;
 	style: TextStyle(defaultTextStyle) {
-		font: font(12px);
+		font: font(10px);
 		linkUnderline: kLinkUnderlineNever;
 	}
 }
-giveawayGiftCodeValueMultiline: FlatLabel(giveawayGiftCodeValue) {
+giveawayGiftMessage: FlatLabel(defaultTableValue) {
 	minWidth: 128px;
-	maxHeight: 100px;
+	maxHeight: 0px;
 }
 giveawayGiftCodeValueMargin: margins(13px, 9px, 13px, 9px);
 giveawayGiftCodePeerMargin: margins(11px, 6px, 11px, 4px);
@@ -164,7 +156,7 @@ giveawayGiftCodeBox: Box(defaultBox) {
 	button: RoundButton(defaultActiveButton) {
 		height: 42px;
 		textTop: 12px;
-		font: font(13px semibold);
+		style: semiboldTextStyle;
 	}
 	shadowIgnoreTopSkip: true;
 }
@@ -204,4 +196,62 @@ startGiveawayButtonTextStyle: TextStyle(defaultTextStyle) {
 startGiveawayButtonLoading: InfiniteRadialAnimation(defaultInfiniteRadialAnimation) {
 	color: activeButtonFg;
 	thickness: 2px;
+}
+
+starConvertButtonLoading: InfiniteRadialAnimation(startGiveawayButtonLoading) {
+	color: windowActiveTextFg;
+	thickness: 2px;
+}
+
+starGiftSmallButton: defaultTableSmallButton;
+darkGiftCodeBox: Box(giveawayGiftCodeBox) {
+	button: RoundButton(defaultActiveButton) {
+		height: 42px;
+		textTop: 12px;
+		style: semiboldTextStyle;
+	}
+	bg: groupCallMembersBg;
+	title: FlatLabel(boxTitle) {
+		textFg: groupCallMembersFg;
+	}
+	titleAdditionalFg: groupCallMemberNotJoinedStatus;
+}
+darkGiftLink: icon {{ "menu/copy", groupCallMembersFg }};
+darkGiftShare: icon {{ "menu/share", groupCallMembersFg }};
+darkGiftTransfer: icon {{ "chat/input_replace", groupCallMembersFg }};
+darkGiftNftWear: icon {{ "menu/nft_wear", groupCallMembersFg }};
+darkGiftNftTakeOff: icon {{ "menu/nft_takeoff", groupCallMembersFg }};
+darkGiftPalette: TextPalette(defaultTextPalette) {
+	linkFg: mediaviewTextLinkFg;
+	monoFg: groupCallMembersFg;
+	spoilerFg: groupCallMembersFg;
+}
+darkGiftTable: Table(giveawayGiftCodeTable) {
+	headerBg: groupCallMembersBgOver;
+	borderFg: mediaviewMenuBgOver;
+	smallButton: RoundButton(defaultTableSmallButton) {
+		textFg: groupCallMembersFg;
+		textFgOver: groupCallMembersFg;
+		textBg: groupCallMenuBgRipple;
+		textBgOver: groupCallMenuBgRipple;
+		ripple: RippleAnimation(defaultRippleAnimation) {
+			color: mediaviewMenuBgOver;
+		}
+	}
+	defaultLabel: FlatLabel(defaultTableLabel) {
+		textFg: groupCallMembersFg;
+		palette: darkGiftPalette;
+	}
+	defaultValue: FlatLabel(defaultTableValue) {
+		textFg: groupCallMembersFg;
+		palette: darkGiftPalette;
+	}
+}
+darkGiftTableValueMultiline: FlatLabel(giveawayGiftCodeValueMultiline) {
+	textFg: groupCallMembersFg;
+	palette: darkGiftPalette;
+}
+darkGiftTableMessage: FlatLabel(giveawayGiftMessage) {
+	textFg: groupCallMembersFg;
+	palette: darkGiftPalette;
 }

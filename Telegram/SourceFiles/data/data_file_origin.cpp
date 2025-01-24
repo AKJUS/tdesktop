@@ -59,6 +59,24 @@ struct FileReferenceAccumulator {
 			push(data.vdocuments());
 		}, [&](const MTPDwebPageAttributeStickerSet &data) {
 			push(data.vstickers());
+		}, [&](const MTPDwebPageAttributeUniqueStarGift &data) {
+			push(data.vgift());
+		});
+	}
+	void push(const MTPStarGift &data) {
+		data.match([&](const MTPDstarGift &data) {
+			push(data.vsticker());
+		}, [&](const MTPDstarGiftUnique &data) {
+			push(data.vattributes());
+		});
+	}
+	void push(const MTPStarGiftAttribute &data) {
+		data.match([&](const MTPDstarGiftAttributeModel &data) {
+			push(data.vdocument());
+		}, [&](const MTPDstarGiftAttributePattern &data) {
+			push(data.vdocument());
+		}, [&](const MTPDstarGiftAttributeBackdrop &data) {
+		}, [&](const MTPDstarGiftAttributeOriginalDetails &data) {
 		});
 	}
 	void push(const MTPWebPage &data) {
@@ -76,15 +94,26 @@ struct FileReferenceAccumulator {
 		}, [](const auto &data) {
 		});
 	}
+	void push(const MTPMessageExtendedMedia &data) {
+		data.match([&](const MTPDmessageExtendedMediaPreview &data) {
+		}, [&](const MTPDmessageExtendedMedia &data) {
+			push(data.vmedia());
+		});
+	}
 	void push(const MTPMessageMedia &data) {
 		data.match([&](const MTPDmessageMediaPhoto &data) {
 			push(data.vphoto());
 		}, [&](const MTPDmessageMediaDocument &data) {
 			push(data.vdocument());
+			push(data.valt_documents());
 		}, [&](const MTPDmessageMediaWebPage &data) {
 			push(data.vwebpage());
 		}, [&](const MTPDmessageMediaGame &data) {
 			push(data.vgame());
+		}, [&](const MTPDmessageMediaInvoice &data) {
+			push(data.vextended_media());
+		}, [&](const MTPDmessageMediaPaidMedia &data) {
+			push(data.vextended_media());
 		}, [](const auto &data) {
 		});
 	}

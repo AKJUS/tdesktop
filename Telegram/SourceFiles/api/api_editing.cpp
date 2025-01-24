@@ -128,7 +128,7 @@ mtpRequestId EditMessage(
 		}
 
 		if (updateRecentStickers) {
-			api->requestRecentStickersForce(true);
+			api->requestSpecialStickersForce(false, false, true);
 		}
 	}).fail([=](const MTP::Error &error, mtpRequestId requestId) {
 		if constexpr (ErrorWithId<FailCallback>) {
@@ -153,9 +153,7 @@ mtpRequestId EditMessage(
 	const auto &text = item->originalText();
 	const auto webpage = (!item->media() || !item->media()->webpage())
 		? Data::WebPageDraft{ .removed = true }
-		: Data::WebPageDraft{
-			.id = item->media()->webpage()->id,
-		};
+		: Data::WebPageDraft::FromItem(item);
 	return EditMessage(
 		item,
 		text,
@@ -285,7 +283,9 @@ mtpRequestId EditTextMessage(
 				return MTP_inputMediaDocument(
 					MTP_flags(flags),
 					document->mtpInput(),
+					MTPInputPhoto(), // video_cover
 					MTP_int(media->ttlSeconds()),
+					MTPint(), // video_timestamp
 					MTPstring()); // query
 			};
 			takeFileReference = [=] { return document->fileReference(); };

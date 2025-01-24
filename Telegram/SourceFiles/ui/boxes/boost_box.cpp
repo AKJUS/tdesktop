@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/effects/fireworks_animation.h"
+#include "ui/effects/premium_bubble.h"
 #include "ui/effects/premium_graphics.h"
 #include "ui/layers/generic_box.h"
 #include "ui/text/text_utilities.h"
@@ -111,48 +112,13 @@ namespace {
 [[nodiscard]] object_ptr<Ui::FlatLabel> MakeFeaturesBadge(
 		not_null<QWidget*> parent,
 		rpl::producer<QString> text) {
-	auto result = object_ptr<Ui::FlatLabel>(
-		parent,
-		std::move(text),
-		st::boostLevelBadge);
-	const auto label = result.data();
-
-	label->show();
-	label->paintRequest() | rpl::start_with_next([=] {
-		const auto size = label->textMaxWidth();
-		const auto rect = QRect(
-			(label->width() - size) / 2,
-			st::boostLevelBadge.margin.top(),
-			size,
-			st::boostLevelBadge.style.font->height
-		).marginsAdded(st::boostLevelBadge.margin);
-		auto p = QPainter(label);
-		auto hq = PainterHighQualityEnabler(p);
+	return MakeBoostFeaturesBadge(parent, std::move(text), [](QRect rect) {
 		auto gradient = QLinearGradient(
 			rect.topLeft(),
 			rect.topRight());
 		gradient.setStops(Ui::Premium::GiftGradientStops());
-		p.setBrush(gradient);
-		p.setPen(Qt::NoPen);
-		p.drawRoundedRect(rect, rect.height() / 2., rect.height() / 2.);
-
-		const auto &lineFg = st::windowBgRipple;
-		const auto line = st::boostLevelBadgeLine;
-		const auto top = st::boostLevelBadge.margin.top()
-			+ ((st::boostLevelBadge.style.font->height - line) / 2);
-		const auto left = 0;
-		const auto skip = st::boostLevelBadgeSkip;
-		if (const auto right = rect.x() - skip; right > left) {
-			p.fillRect(left, top, right - left, line, lineFg);
-		}
-		const auto right = label->width();
-		if (const auto left = rect.x() + rect.width() + skip
-			; left < right) {
-			p.fillRect(left, top, right - left, line, lineFg);
-		}
-	}, label->lifetime());
-
-	return result;
+		return QBrush(gradient);
+	});
 }
 
 void AddFeaturesList(
@@ -175,7 +141,7 @@ void AddFeaturesList(
 			st::boostFeatureIconPosition);
 	};
 	const auto proj = &Ui::Text::RichLangValue;
-	const auto max = std::max({
+	const auto lowMax = std::max({
 		features.linkLogoLevel,
 		features.transcribeLevel,
 		features.emojiPackLevel,
@@ -189,9 +155,13 @@ void AddFeaturesList(
 			? 0
 			: features.linkStylesByLevel.back().first),
 	});
+	const auto highMax = std::max(lowMax, features.sponsoredLevel);
 	auto nameColors = 0;
 	auto linkStyles = 0;
-	for (auto i = std::max(startFromLevel, 1); i <= max; ++i) {
+	for (auto i = std::max(startFromLevel, 1); i <= highMax; ++i) {
+		if ((i > lowMax) && (i < highMax)) {
+			continue;
+		}
 		const auto unlocks = (i == startFromLevel);
 		container->add(
 			MakeFeaturesBadge(
@@ -202,6 +172,9 @@ void AddFeaturesList(
 						lt_count,
 						rpl::single(float64(i)))),
 			st::boostLevelBadgePadding);
+		if (i >= features.sponsoredLevel) {
+			add(tr::lng_channel_earn_off(proj), st::boostFeatureOffSponsored);
+		}
 		if (i >= features.customWallpaperLevel) {
 			add(
 				(group
@@ -352,8 +325,14 @@ void BoostBox(
 		return (counters.mine > 1) ? u"x%1"_q.arg(counters.mine) : u""_q;
 	});
 
+	const auto wasMine = state->data.current().mine;
+	const auto wasLifting = data.lifting;
 	auto text = state->data.value(
 	) | rpl::map([=](BoostCounters counters) {
+		const auto lifting = wasLifting
+			? (wasLifting
+				- std::clamp(counters.mine - wasMine, 0, wasLifting - 1))
+			: 0;
 		const auto bold = Ui::Text::Bold(name);
 		const auto now = counters.boosts;
 		const auto full = !counters.nextLevelBoosts;
@@ -364,7 +343,14 @@ void BoostBox(
 			lt_count,
 			rpl::single(float64(counters.level + (left ? 1 : 0))),
 			Ui::Text::RichLangValue);
-		return (counters.mine || full)
+		return (lifting > 1)
+			? tr::lng_boost_group_lift_restrictions_many(
+				lt_count,
+				rpl::single(float64(lifting)),
+				Ui::Text::RichLangValue)
+			: lifting
+			? tr::lng_boost_group_lift_restrictions(Ui::Text::RichLangValue)
+			: (counters.mine || full)
 			? (left
 				? tr::lng_boost_channel_needs_unlock(
 					lt_count,
@@ -392,6 +378,14 @@ void BoostBox(
 				rpl::single(bold),
 				Ui::Text::RichLangValue);
 	}) | rpl::flatten_latest();
+	if (wasLifting) {
+		state->data.value(
+		) | rpl::start_with_next([=](BoostCounters counters) {
+			if (counters.mine - wasMine >= wasLifting) {
+				box->closeBox();
+			}
+		}, box->lifetime());
+	}
 
 	auto faded = object_ptr<Ui::FadeWrap<>>(
 		close->parentWidget(),
@@ -692,6 +686,8 @@ void AskBoostBox(
 		return tr::lng_boost_channel_title_reactions();
 	}, [](AskBoostCpm) {
 		return tr::lng_boost_channel_title_cpm();
+	}, [](AskBoostWearCollectible) {
+		return tr::lng_boost_channel_title_wear();
 	});
 	auto reasonText = v::match(data.reason.data, [&](
 			AskBoostChannelColor data) {
@@ -727,6 +723,11 @@ void AskBoostBox(
 			Ui::Text::RichLangValue);
 	}, [&](AskBoostCpm data) {
 		return tr::lng_boost_channel_needs_level_cpm(
+			lt_count,
+			rpl::single(float64(data.requiredLevel)),
+			Ui::Text::RichLangValue);
+	}, [&](AskBoostWearCollectible data) {
+		return tr::lng_boost_channel_needs_level_wear(
 			lt_count,
 			rpl::single(float64(data.requiredLevel)),
 			Ui::Text::RichLangValue);
@@ -839,7 +840,7 @@ void FillBoostLimit(
 		st::boostBubble,
 		std::move(showFinished),
 		rpl::duplicate(bubbleRowState),
-		true,
+		Premium::BubbleType::Premium,
 		nullptr,
 		&st::premiumIconBoost,
 		limitLinePadding);
@@ -876,6 +877,50 @@ void FillBoostLimit(
 		},
 		std::move(limitState),
 		limitLinePadding);
+}
+
+object_ptr<Ui::FlatLabel> MakeBoostFeaturesBadge(
+		not_null<QWidget*> parent,
+		rpl::producer<QString> text,
+		Fn<QBrush(QRect)> bg) {
+	auto result = object_ptr<Ui::FlatLabel>(
+		parent,
+		std::move(text),
+		st::boostLevelBadge);
+	const auto label = result.data();
+
+	label->show();
+	label->paintRequest() | rpl::start_with_next([=] {
+		const auto size = label->textMaxWidth();
+		const auto rect = QRect(
+			(label->width() - size) / 2,
+			st::boostLevelBadge.margin.top(),
+			size,
+			st::boostLevelBadge.style.font->height
+		).marginsAdded(st::boostLevelBadge.margin);
+		auto p = QPainter(label);
+		auto hq = PainterHighQualityEnabler(p);
+		p.setBrush(bg(rect));
+		p.setPen(Qt::NoPen);
+		p.drawRoundedRect(rect, rect.height() / 2., rect.height() / 2.);
+
+		const auto &lineFg = st::windowBgRipple;
+		const auto line = st::boostLevelBadgeLine;
+		const auto top = st::boostLevelBadge.margin.top()
+			+ ((st::boostLevelBadge.style.font->height - line) / 2);
+		const auto left = 0;
+		const auto skip = st::boostLevelBadgeSkip;
+		if (const auto right = rect.x() - skip; right > left) {
+			p.fillRect(left, top, right - left, line, lineFg);
+		}
+		const auto right = label->width();
+		if (const auto left = rect.x() + rect.width() + skip
+			; left < right) {
+			p.fillRect(left, top, right - left, line, lineFg);
+		}
+	}, label->lifetime());
+
+	return result;
 }
 
 } // namespace Ui

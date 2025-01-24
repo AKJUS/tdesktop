@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_forum_topic.h"
 #include "data/data_session.h"
 #include "data/stickers/data_custom_emoji.h"
+#include "base/event_filter.h"
 #include "base/random.h"
 #include "base/qt_signal_producer.h"
 #include "chat_helpers/emoji_list_widget.h"
@@ -264,7 +265,7 @@ struct IconSelector {
 	const auto manager = &controller->session().data().customEmojiManager();
 
 	auto factory = [=](DocumentId id, Fn<void()> repaint)
-		-> std::unique_ptr<Ui::Text::CustomEmoji> {
+	-> std::unique_ptr<Ui::Text::CustomEmoji> {
 		const auto tag = Data::CustomEmojiManager::SizeTag::Large;
 		if (id == kDefaultIconId) {
 			return std::make_unique<DefaultIconEmoji>(
@@ -287,7 +288,7 @@ struct IconSelector {
 			.show = controller->uiShow(),
 			.mode = EmojiListWidget::Mode::TopicIcon,
 			.paused = Window::PausedIn(controller, PauseReason::Layer),
-			.customRecentList = recent(),
+			.customRecentList = DocumentListToRecent(recent()),
 			.customRecentFactory = std::move(factory),
 			.st = &st::reactPanelEmojiPan,
 		}),
@@ -296,7 +297,7 @@ struct IconSelector {
 	icons->requestDefaultIfUnknown();
 	icons->defaultUpdates(
 	) | rpl::start_with_next([=] {
-		selector->provideRecent(recent());
+		selector->provideRecent(DocumentListToRecent(recent()));
 	}, selector->lifetime());
 
 	placeFooter(selector->createFooter());
@@ -481,6 +482,9 @@ void EditForumTopicBox(
 			title->getLastText().trimmed(),
 			state->defaultIcon.current().colorId,
 		};
+	}, title->lifetime());
+	title->submits() | rpl::start_with_next([box] {
+		box->triggerButton(0);
 	}, title->lifetime());
 
 	if (!topic || !topic->isGeneral()) {

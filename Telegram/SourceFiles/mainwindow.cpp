@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/shadow.h"
 #include "ui/widgets/tooltip.h"
 #include "ui/emoji_config.h"
+#include "ui/ui_utility.h"
 #include "lang/lang_cloud_manager.h"
 #include "lang/lang_instance.h"
 #include "core/sandbox.h"
@@ -193,7 +194,7 @@ void MainWindow::setupPasscodeLock() {
 		setInnerFocus();
 	}
 	if (const auto sessionController = controller().sessionController()) {
-		sessionController->session().attachWebView().cancel();
+		sessionController->session().attachWebView().closeAll();
 	}
 }
 
@@ -269,13 +270,11 @@ void MainWindow::setupMain(
 	auto created = object_ptr<MainWidget>(bodyWidget(), sessionController());
 	clearWidgets();
 	_main = std::move(created);
-	if (const auto peer = singlePeer()) {
-		updateControlsGeometry();
-		_main->controller()->showPeerHistory(
-			peer,
-			Window::SectionShow::Way::ClearStack,
-			singlePeerShowAtMsgId);
-	}
+	updateControlsGeometry();
+	Ui::SendPendingMoveResizeEvents(_main);
+	_main->controller()->showByInitialId(
+		Window::SectionShow::Way::ClearStack,
+		singlePeerShowAtMsgId);
 	if (_passcodeLock) {
 		_main->hide();
 	} else {

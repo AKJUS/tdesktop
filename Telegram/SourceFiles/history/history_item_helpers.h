@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/object_ptr.h"
+
 class History;
 
 namespace Api {
@@ -17,11 +19,17 @@ struct SendAction;
 namespace Data {
 class Story;
 class Thread;
+struct SendError;
+struct SendErrorWithThread;
 } // namespace Data
 
 namespace Main {
 class Session;
 } // namespace Main
+
+namespace Ui {
+class BoxContent;
+} // namespace Ui
 
 struct PreparedServiceText {
 	TextWithEntities text;
@@ -83,6 +91,10 @@ void RequestDependentMessageStory(
 	PeerId peerId,
 	StoryId storyId);
 [[nodiscard]] MessageFlags NewMessageFlags(not_null<PeerData*> peer);
+[[nodiscard]] TimeId NewMessageDate(TimeId scheduled);
+[[nodiscard]] TimeId NewMessageDate(const Api::SendOptions &options);
+[[nodiscard]] PeerId NewMessageFromId(const Api::SendAction &action);
+[[nodiscard]] QString NewMessagePostAuthor(const Api::SendAction &action);
 [[nodiscard]] bool ShouldSendSilent(
 	not_null<PeerData*> peer,
 	const Api::SendOptions &options);
@@ -104,12 +116,19 @@ struct SendingErrorRequest {
 	const TextWithTags *text = nullptr;
 	bool ignoreSlowmodeCountdown = false;
 };
-[[nodiscard]] QString GetErrorTextForSending(
+[[nodiscard]] Data::SendError GetErrorForSending(
 	not_null<PeerData*> peer,
 	SendingErrorRequest request);
-[[nodiscard]] QString GetErrorTextForSending(
+[[nodiscard]] Data::SendError GetErrorForSending(
 	not_null<Data::Thread*> thread,
 	SendingErrorRequest request);
+
+[[nodiscard]] Data::SendErrorWithThread GetErrorForSending(
+	const std::vector<not_null<Data::Thread*>> &threads,
+	SendingErrorRequest request);
+[[nodiscard]] object_ptr<Ui::BoxContent> MakeSendErrorBox(
+	const Data::SendErrorWithThread &error,
+	bool withTitle);
 
 [[nodiscard]] TextWithEntities DropDisallowedCustomEmoji(
 	not_null<PeerData*> to,
@@ -144,6 +163,7 @@ ClickHandlerPtr JumpToStoryClickHandler(
 [[nodiscard]] ClickHandlerPtr HideSponsoredClickHandler();
 [[nodiscard]] ClickHandlerPtr ReportSponsoredClickHandler(
 	not_null<HistoryItem*> item);
+[[nodiscard]] ClickHandlerPtr AboutSponsoredClickHandler();
 
 [[nodiscard]] not_null<HistoryItem*> GenerateJoinedMessage(
 	not_null<History*> history,

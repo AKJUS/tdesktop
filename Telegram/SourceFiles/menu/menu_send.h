@@ -53,6 +53,7 @@ struct Details {
 	Type type = Type::Disabled;
 	SpoilerState spoiler = SpoilerState::None;
 	CaptionState caption = CaptionState::None;
+	std::optional<uint64> price;
 	bool effectAllowed = false;
 };
 
@@ -69,6 +70,7 @@ enum class ActionType : uchar {
 	SpoilerOff,
 	CaptionUp,
 	CaptionDown,
+	ChangePrice,
 };
 struct Action {
 	using Type = ActionType;
@@ -86,6 +88,13 @@ FillMenuResult FillSendMenu(
 	Details details,
 	Fn<void(Action, Details)> action,
 	const style::ComposeIcons *iconsOverride = nullptr,
+	std::optional<QPoint> desiredPositionOverride = std::nullopt);
+
+FillMenuResult AttachSendMenuEffect(
+	not_null<Ui::PopupMenu*> menu,
+	std::shared_ptr<ChatHelpers::Show> show,
+	Details details,
+	Fn<void(Action, Details)> action,
 	std::optional<QPoint> desiredPositionOverride = std::nullopt);
 
 void SetupMenuAndShortcuts(

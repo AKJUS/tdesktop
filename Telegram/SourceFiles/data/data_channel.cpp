@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_channel.h"
 
+#include "api/api_global_privacy.h"
 #include "data/data_changes.h"
 #include "data/data_channel_admins.h"
 #include "data/data_user.h"
@@ -29,6 +30,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_chat_invite.h"
 #include "api/api_invite_links.h"
 #include "apiwrap.h"
+#include "ui/unread_badge.h"
 #include "window/notifications_manager.h"
 
 namespace {
@@ -184,7 +186,11 @@ void ChannelData::setFlags(ChannelDataFlags which) {
 			});
 		}
 	}
-	if (diff & (Flag::Forum | Flag::CallNotEmpty | Flag::SimilarExpanded)) {
+	if (diff & (Flag::Forum
+		| Flag::CallNotEmpty
+		| Flag::SimilarExpanded
+		| Flag::Signatures
+		| Flag::SignatureProfiles)) {
 		if (const auto history = this->owner().historyLoaded(this)) {
 			if (diff & Flag::CallNotEmpty) {
 				history->updateChatListEntry();
@@ -202,6 +208,12 @@ void ChannelData::setFlags(ChannelDataFlags which) {
 				if (const auto item = history->joinedMessageInstance()) {
 					history->owner().requestItemResize(item);
 				}
+			}
+			if (diff & Flag::SignatureProfiles) {
+				history->forceFullResize();
+			}
+			if (diff & (Flag::Signatures | Flag::SignatureProfiles)) {
+				session().changes().peerUpdated(this, UpdateFlag::Rights);
 			}
 		}
 	}
@@ -534,12 +546,9 @@ auto ChannelData::unavailableReasons() const
 	return _unavailableReasons;
 }
 
-void ChannelData::setUnavailableReasons(
+void ChannelData::setUnavailableReasonsList(
 		std::vector<Data::UnavailableReason> &&reasons) {
-	if (_unavailableReasons != reasons) {
-		_unavailableReasons = std::move(reasons);
-		session().changes().peerUpdated(this, UpdateFlag::UnavailableReason);
-	}
+	_unavailableReasons = std::move(reasons);
 }
 
 void ChannelData::setAvailableMinId(MsgId availableMinId) {
@@ -581,6 +590,10 @@ bool ChannelData::canEditStories() const {
 bool ChannelData::canDeleteStories() const {
 	return amCreator()
 		|| (adminRights() & AdminRight::DeleteStories);
+}
+
+bool ChannelData::canPostPaidMedia() const {
+	return canPostMessages() && (flags() & Flag::PaidMediaAllowed);
 }
 
 bool ChannelData::anyoneCanAddMembers() const {
@@ -701,6 +714,33 @@ bool ChannelData::canRestrictParticipant(
 	return adminRights() & AdminRight::BanUsers;
 }
 
+void ChannelData::setBotVerifyDetails(Ui::BotVerifyDetails details) {
+	if (!details) {
+		if (_botVerifyDetails) {
+			_botVerifyDetails = nullptr;
+			session().changes().peerUpdated(this, UpdateFlag::VerifyInfo);
+		}
+	} else if (!_botVerifyDetails) {
+		_botVerifyDetails = std::make_unique<Ui::BotVerifyDetails>(details);
+		session().changes().peerUpdated(this, UpdateFlag::VerifyInfo);
+	} else if (*_botVerifyDetails != details) {
+		*_botVerifyDetails = details;
+		session().changes().peerUpdated(this, UpdateFlag::VerifyInfo);
+	}
+}
+
+void ChannelData::setBotVerifyDetailsIcon(DocumentId iconId) {
+	if (!iconId) {
+		setBotVerifyDetails({});
+	} else {
+		auto info = _botVerifyDetails
+			? *_botVerifyDetails
+			: Ui::BotVerifyDetails();
+		info.iconId = iconId;
+		setBotVerifyDetails(info);
+	}
+}
+
 void ChannelData::setAdminRights(ChatAdminRights rights) {
 	if (rights == adminRights()) {
 		return;
@@ -817,6 +857,17 @@ void ChannelData::growSlowmodeLastMessage(TimeId when) {
 		info->slowmodeLastMessage = when;
 	}
 	session().changes().peerUpdated(this, UpdateFlag::Slowmode);
+}
+
+int ChannelData::peerGiftsCount() const {
+	return _peerGiftsCount;
+}
+
+void ChannelData::setPeerGiftsCount(int count) {
+	if (_peerGiftsCount != count) {
+		_peerGiftsCount = count;
+		session().changes().peerUpdated(this, UpdateFlag::PeerGifts);
+	}
 }
 
 int ChannelData::boostsApplied() const {
@@ -960,9 +1011,13 @@ PeerId ChannelData::groupCallDefaultJoinAs() const {
 
 void ChannelData::setAllowedReactions(Data::AllowedReactions value) {
 	if (_allowedReactions != value) {
+		if (value.paidEnabled) {
+			session().api().globalPrivacy().loadPaidReactionAnonymous();
+		}
 		const auto enabled = [](const Data::AllowedReactions &allowed) {
 			return (allowed.type != Data::AllowedReactionsType::Some)
-				|| !allowed.some.empty();
+				|| !allowed.some.empty()
+				|| allowed.paidEnabled;
 		};
 		const auto was = enabled(_allowedReactions);
 		_allowedReactions = std::move(value);
@@ -1022,6 +1077,14 @@ int ChannelData::levelHint() const {
 
 void ChannelData::updateLevelHint(int levelHint) {
 	_levelHint = levelHint;
+}
+
+TimeId ChannelData::subscriptionUntilDate() const {
+	return _subscriptionUntilDate;
+}
+
+void ChannelData::updateSubscriptionUntilDate(TimeId subscriptionUntilDate) {
+	_subscriptionUntilDate = subscriptionUntilDate;
 }
 
 namespace Data {
@@ -1084,7 +1147,10 @@ void ApplyChannelUpdate(
 		| Flag::ParticipantsHidden
 		| Flag::CanGetStatistics
 		| Flag::ViewAsMessages
-		| Flag::CanViewRevenue;
+		| Flag::CanViewRevenue
+		| Flag::PaidMediaAllowed
+		| Flag::CanViewCreditsRevenue
+		| Flag::StargiftsAvailable;
 	channel->setFlags((channel->flags() & ~mask)
 		| (update.is_can_set_username() ? Flag::CanSetUsername : Flag())
 		| (update.is_can_view_participants()
@@ -1101,7 +1167,14 @@ void ApplyChannelUpdate(
 		| (update.is_view_forum_as_messages()
 			? Flag::ViewAsMessages
 			: Flag())
-		| (update.is_can_view_revenue() ? Flag::CanViewRevenue : Flag()));
+		| (update.is_paid_media_allowed() ? Flag::PaidMediaAllowed : Flag())
+		| (update.is_can_view_revenue() ? Flag::CanViewRevenue : Flag())
+		| (update.is_can_view_stars_revenue()
+			? Flag::CanViewCreditsRevenue
+			: Flag())
+		| (update.is_stargifts_available()
+			? Flag::StargiftsAvailable
+			: Flag()));
 	channel->setUserpicPhoto(update.vchat_photo());
 	if (const auto migratedFrom = update.vmigrated_from_chat_id()) {
 		channel->addFlags(Flag::Megagroup);
@@ -1114,6 +1187,7 @@ void ApplyChannelUpdate(
 	channel->setRestrictedCount(update.vbanned_count().value_or_empty());
 	channel->setKickedCount(update.vkicked_count().value_or_empty());
 	channel->setSlowmodeSeconds(update.vslowmode_seconds().value_or_empty());
+	channel->setPeerGiftsCount(update.vstargifts_count().value_or_empty());
 	if (const auto next = update.vslowmode_next_send_date()) {
 		channel->growSlowmodeLastMessage(
 			next->v - channel->slowmodeSeconds());
@@ -1210,12 +1284,19 @@ void ApplyChannelUpdate(
 
 	const auto reactionsLimit = update.vreactions_limit().value_or_empty();
 	if (const auto allowed = update.vavailable_reactions()) {
-		auto parsed = Data::Parse(*allowed);
-		parsed.maxCount = reactionsLimit;
+		auto parsed = Data::Parse(
+			*allowed,
+			reactionsLimit,
+			update.is_paid_reactions_available());
 		channel->setAllowedReactions(std::move(parsed));
 	} else {
-		channel->setAllowedReactions({ .maxCount = reactionsLimit });
+		channel->setAllowedReactions({
+			.maxCount = reactionsLimit,
+			.paidEnabled = update.is_paid_reactions_available(),
+		});
 	}
+	channel->setBotVerifyDetails(
+		ParseBotVerifyDetails(update.vbot_verification()));
 	channel->owner().stories().apply(channel, update.vstories());
 	channel->fullUpdated();
 	channel->setPendingRequestsCount(

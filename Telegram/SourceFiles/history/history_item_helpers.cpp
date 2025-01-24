@@ -38,6 +38,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "core/application.h"
 #include "core/click_handler_types.h" // ClickHandlerContext.
+#include "ui/boxes/confirm_box.h"
 #include "ui/text/format_values.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
@@ -59,7 +60,7 @@ bool PeerCallKnown(not_null<PeerData*> peer) {
 
 } // namespace
 
-QString GetErrorTextForSending(
+Data::SendError GetErrorForSending(
 		not_null<PeerData*> peer,
 		SendingErrorRequest request) {
 	const auto forum = request.topicRootId ? peer->forum() : nullptr;
@@ -71,13 +72,13 @@ QString GetErrorTextForSending(
 		: peer->owner().history(peer);
 	if (request.story) {
 		if (const auto error = request.story->errorTextForForward(thread)) {
-			return *error;
+			return error;
 		}
 	}
 	if (request.forward) {
 		for (const auto &item : *request.forward) {
 			if (const auto error = item->errorTextForForward(thread)) {
-				return *error;
+				return error;
 			}
 		}
 	}
@@ -87,7 +88,7 @@ QString GetErrorTextForSending(
 			peer,
 			ChatRestriction::SendOther);
 		if (error) {
-			return *error;
+			return error;
 		} else if (!Data::CanSendTexts(thread)) {
 			return tr::lng_forward_cant(tr::now);
 		}
@@ -134,14 +135,57 @@ QString GetErrorTextForSending(
 		}
 	}
 
-	return QString();
+	return {};
 }
 
-QString GetErrorTextForSending(
+Data::SendError GetErrorForSending(
 		not_null<Data::Thread*> thread,
 		SendingErrorRequest request) {
 	request.topicRootId = thread->topicRootId();
-	return GetErrorTextForSending(thread->peer(), std::move(request));
+	return GetErrorForSending(thread->peer(), std::move(request));
+}
+
+Data::SendErrorWithThread GetErrorForSending(
+		const std::vector<not_null<Data::Thread*>> &threads,
+		SendingErrorRequest request) {
+	for (const auto thread : threads) {
+		const auto error = GetErrorForSending(thread, request);
+		if (error) {
+			return Data::SendErrorWithThread{ error, thread };
+		}
+	}
+	return {};
+}
+object_ptr<Ui::BoxContent> MakeSendErrorBox(
+		const Data::SendErrorWithThread &error,
+		bool withTitle) {
+	Expects(error.error.has_value() && error.thread != nullptr);
+
+	auto text = TextWithEntities();
+	if (withTitle) {
+		text.append(
+			Ui::Text::Bold(error.thread->chatListName())
+		).append("\n\n");
+	}
+	if (error.error.boostsToLift) {
+		text.append(Ui::Text::Link(error.error.text));
+	} else {
+		text.append(error.error.text);
+	}
+	const auto peer = error.thread->peer();
+	const auto lifting = error.error.boostsToLift;
+	const auto filter = [=](const auto &...) {
+		Expects(peer->isChannel());
+
+		const auto window = ChatHelpers::ResolveWindowDefault()(
+			&peer->session());
+		window->resolveBoostState(peer->asChannel(), lifting);
+		return false;
+	};
+	return Ui::MakeInformBox({
+		.text = text,
+		.labelFilter = filter,
+	});
 }
 
 void RequestDependentMessageItem(
@@ -185,6 +229,32 @@ void RequestDependentMessageStory(
 MessageFlags NewMessageFlags(not_null<PeerData*> peer) {
 	return MessageFlag::BeingSent
 		| (peer->isSelf() ? MessageFlag() : MessageFlag::Outgoing);
+}
+
+TimeId NewMessageDate(TimeId scheduled) {
+	return scheduled ? scheduled : base::unixtime::now();
+}
+
+TimeId NewMessageDate(const Api::SendOptions &options) {
+	return options.shortcutId ? 1 : NewMessageDate(options.scheduled);
+}
+
+PeerId NewMessageFromId(const Api::SendAction &action) {
+	return action.options.sendAs
+		? action.options.sendAs->id
+		: action.history->peer->amAnonymous()
+		? PeerId()
+		: action.history->session().userPeerId();
+}
+
+QString NewMessagePostAuthor(const Api::SendAction &action) {
+	return !action.history->peer->isBroadcast()
+		? QString()
+		: (action.options.sendAs == action.history->peer)
+		? QString()
+		: action.options.sendAs
+		? action.options.sendAs->name()
+		: action.history->session().user()->name();
 }
 
 bool ShouldSendSilent(
@@ -317,10 +387,10 @@ ClickHandlerPtr JumpToMessageClickHandler(
 		TextWithEntities highlightPart,
 		int highlightPartOffsetHint) {
 	return std::make_shared<LambdaClickHandler>([=] {
-		const auto separate = Core::App().separateWindowForPeer(peer);
+		const auto separate = Core::App().separateWindowFor(peer);
 		const auto controller = separate
 			? separate->sessionController()
-			: peer->session().tryResolveWindow();
+			: peer->session().tryResolveWindow(peer);
 		if (controller) {
 			auto params = Window::SectionShow{
 				Window::SectionShow::Way::Forward
@@ -347,7 +417,7 @@ ClickHandlerPtr JumpToStoryClickHandler(
 		not_null<PeerData*> peer,
 		StoryId storyId) {
 	return std::make_shared<LambdaClickHandler>([=] {
-		const auto separate = Core::App().separateWindowForPeer(peer);
+		const auto separate = Core::App().separateWindowFor(peer);
 		const auto controller = separate
 			? separate->sessionController()
 			: peer->session().tryResolveWindow();
@@ -383,10 +453,20 @@ ClickHandlerPtr ReportSponsoredClickHandler(not_null<HistoryItem*> item) {
 			Menu::ShowSponsored(
 				controller->widget(),
 				controller->uiShow(),
-				item);
+				item->fullId());
 		}
 	});
 }
+
+ClickHandlerPtr AboutSponsoredClickHandler() {
+	return std::make_shared<LambdaClickHandler>([=](ClickContext context) {
+		const auto my = context.other.value<ClickHandlerContext>();
+		if (const auto controller = my.sessionWindow.get()) {
+			Menu::ShowSponsoredAbout(controller->uiShow(), my.itemId);
+		}
+	});
+}
+
 
 MessageFlags FlagsFromMTP(
 		MsgId id,
@@ -415,7 +495,10 @@ MessageFlags FlagsFromMTP(
 			: Flag())
 		| ((flags & MTP::f_views) ? Flag::HasViews : Flag())
 		| ((flags & MTP::f_noforwards) ? Flag::NoForwards : Flag())
-		| ((flags & MTP::f_invert_media) ? Flag::InvertMedia : Flag());
+		| ((flags & MTP::f_invert_media) ? Flag::InvertMedia : Flag())
+		| ((flags & MTP::f_video_processing_pending)
+			? Flag::EstimatedDate
+			: Flag());
 }
 
 MessageFlags FlagsFromMTP(
@@ -433,7 +516,10 @@ MessageFlags FlagsFromMTP(
 		| ((flags & MTP::f_post) ? Flag::Post : Flag())
 		| ((flags & MTP::f_legacy) ? Flag::Legacy : Flag())
 		| ((flags & MTP::f_from_id) ? Flag::HasFromId : Flag())
-		| ((flags & MTP::f_reply_to) ? Flag::HasReplyInfo : Flag());
+		| ((flags & MTP::f_reply_to) ? Flag::HasReplyInfo : Flag())
+		| ((flags & MTP::f_reactions_are_possible)
+			? Flag::ReactionsAllowed
+			: Flag());
 }
 
 MTPMessageReplyHeader NewMessageReplyHeader(const Api::SendAction &action) {
@@ -556,6 +642,8 @@ MediaCheckResult CheckMessageMedia(const MTPMessageMedia &media) {
 	}, [](const MTPDmessageMediaGiveaway &) {
 		return Result::Good;
 	}, [](const MTPDmessageMediaGiveawayResults &) {
+		return Result::Good;
+	}, [](const MTPDmessageMediaPaidMedia &) {
 		return Result::Good;
 	}, [](const MTPDmessageMediaUnsupported &) {
 		return Result::Unsupported;
@@ -838,8 +926,8 @@ void ShowTrialTranscribesToast(int left, TimeId until) {
 			Ui::Text::WithEntities);
 	window->uiShow()->showToast(Ui::Toast::Config{
 		.text = text,
-		.duration = kToastDuration,
 		.filter = filter,
+		.duration = kToastDuration,
 	});
 }
 

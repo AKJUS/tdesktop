@@ -36,7 +36,9 @@ MTPVector<MTPDocumentAttribute> ComposeSendingDocumentAttributes(
 				MTP_double(document->duration() / 1000.),
 				MTP_int(dimensions.width()),
 				MTP_int(dimensions.height()),
-				MTPint())); // preload_prefix_size
+				MTPint(), // preload_prefix_size
+				MTPdouble(), // video_start_ts
+				MTPstring())); // video_codec
 		} else {
 			attributes.push_back(MTP_documentAttributeImageSize(
 				MTP_int(dimensions.width()),
@@ -119,6 +121,8 @@ MTPInputMedia PrepareUploadedDocument(
 		ComposeSendingDocumentAttributes(document),
 		MTP_vector<MTPInputDocument>(
 			ranges::to<QVector<MTPInputDocument>>(info.attachedStickers)),
+		MTPInputPhoto(), // video_cover
+		MTP_int(0), // video_timestamp
 		MTP_int(ttlSeconds));
 }
 
